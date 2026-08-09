@@ -3,4 +3,5 @@ IMAGE_INSTALL += " \
     ocm-tester \
     openssh \
     os-release \
+    adxl345 \
 "
