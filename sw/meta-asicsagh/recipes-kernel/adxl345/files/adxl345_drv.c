@@ -11,13 +11,18 @@
 #define ADXL345_REG_BW_RATE     0x2C
 #define ADXL345_REG_DATAX0      0x32
 
+//Interrupt handling
+#define ADXL345_REG_INT_ENABLE  0x2E
+#define ADXL345_REG_INT_SOURCE  0x30
+#define XL345_DATAREADY         0x80
+
 struct adxl345_data {
     struct i2c_client *client;
     bool is_measuring;
 };
 
 // =====================================================================
-// Helper function: Common I2C data read for all attributes
+// Common I2C data read for all attributes
 // =====================================================================
 static int read_xyz_data(struct adxl345_data *adxl_data, s16 *x, s16 *y, s16 *z) {
     u8 data[6];
@@ -70,10 +75,7 @@ ssize_t x_show(struct device *dev, struct device_attribute *attr, char *buf) {
     return sprintf(buf, "%d\n", x * 4);
 };
 struct device_attribute x_attribute = {
-    .attr = { 
-		.name = "x", 
-		.mode = 0444 
-		},
+    .attr = { .name = "x", .mode = 0444 },
     .show = x_show,
 };
 
@@ -85,10 +87,7 @@ ssize_t y_show(struct device *dev, struct device_attribute *attr, char *buf) {
     return sprintf(buf, "%d\n", y * 4);
 };
 struct device_attribute y_attribute = {
-    .attr = { 
-		.name = "y", 
-		.mode = 0444 
-		},
+    .attr = { .name = "y", .mode = 0444 },
     .show = y_show,
 };
 
@@ -100,11 +99,34 @@ ssize_t z_show(struct device *dev, struct device_attribute *attr, char *buf) {
     return sprintf(buf, "%d\n", z * 4);
 };
 struct device_attribute z_attribute = {
-    .attr = { 
-		.name = "z", 
-		.mode = 0444 
-	},
+    .attr = { .name = "z", .mode = 0444 },
     .show = z_show,
+};
+
+// =====================================================================
+// Attribute: int_source (Reads interrupt flag and clears HW pin)
+// =====================================================================
+ssize_t int_source_show(struct device *dev, struct device_attribute *attr, char *buf) {
+    struct adxl345_data *adxl_data = dev_get_drvdata(dev);
+    int val;
+
+    if (!adxl_data->is_measuring) {
+        return -ENODATA;
+    }
+
+    val = i2c_smbus_read_byte_data(adxl_data->client, ADXL345_REG_INT_SOURCE);
+    if (val < 0) {
+        return val;
+    }
+
+    return sprintf(buf, "%d\n", val);
+};
+struct device_attribute int_source_attribute = {
+    .attr = { 
+		.name = "int_source", 
+		.mode = 0444 
+		},
+    .show = int_source_show,
 };
 
 // =====================================================================
@@ -119,10 +141,14 @@ ssize_t power_mode_store(struct device *dev, struct device_attribute *attr, cons
     }
 
     if (mode == 1) {
+        // Enable Data Ready Interrupt before starting measurements
+        i2c_smbus_write_byte_data(adxl_data->client, ADXL345_REG_INT_ENABLE, XL345_DATAREADY); 
         i2c_smbus_write_byte_data(adxl_data->client, ADXL345_REG_POWER_CTL, 0x08); 
         adxl_data->is_measuring = true;
     } else if (mode == 0) {
         i2c_smbus_write_byte_data(adxl_data->client, ADXL345_REG_POWER_CTL, 0x00); 
+        // Disable Interrupts in standby
+        i2c_smbus_write_byte_data(adxl_data->client, ADXL345_REG_INT_ENABLE, 0x00); 
         adxl_data->is_measuring = false;
     }
 
@@ -130,10 +156,7 @@ ssize_t power_mode_store(struct device *dev, struct device_attribute *attr, cons
 };
 
 struct device_attribute power_mode_attribute = {
-    .attr = {
-        .name = "power_mode",
-        .mode = 0222,
-    },
+    .attr = { .name = "power_mode", .mode = 0222 },
     .store = power_mode_store,
 };
 
@@ -154,13 +177,15 @@ int probe(struct i2c_client *client, const struct i2c_device_id *id) {
 
     i2c_smbus_write_byte_data(client, ADXL345_REG_DATA_FORMAT, 0x08); 
     i2c_smbus_write_byte_data(client, ADXL345_REG_BW_RATE, 0x09);     
-    i2c_smbus_write_byte_data(client, ADXL345_REG_POWER_CTL, 0x00); // Set to standby  
+    i2c_smbus_write_byte_data(client, ADXL345_REG_INT_ENABLE, 0x00); // Interrupts off initially
+    i2c_smbus_write_byte_data(client, ADXL345_REG_POWER_CTL, 0x00);  // Set to standby  
 
     // Register all sysfs files
     device_create_file(&client->dev, &xyz_attribute);
     device_create_file(&client->dev, &x_attribute);
     device_create_file(&client->dev, &y_attribute);
     device_create_file(&client->dev, &z_attribute);
+    device_create_file(&client->dev, &int_source_attribute);
     device_create_file(&client->dev, &power_mode_attribute);
 
     pr_info("ADXL345: Initialization successful.\n");
@@ -178,9 +203,11 @@ void remove(struct i2c_client *client) {
     device_remove_file(&client->dev, &x_attribute);
     device_remove_file(&client->dev, &y_attribute);
     device_remove_file(&client->dev, &z_attribute);
+    device_remove_file(&client->dev, &int_source_attribute);
     device_remove_file(&client->dev, &power_mode_attribute);
     
     i2c_smbus_write_byte_data(adxl_data->client, ADXL345_REG_POWER_CTL, 0x00);
+    i2c_smbus_write_byte_data(adxl_data->client, ADXL345_REG_INT_ENABLE, 0x00);
 
     pr_info("ADXL345: Driver uninstalled.\n");
 }
